@@ -1,0 +1,258 @@
+openapi: 3.0.3
+
+info:
+  title: Scal-e CDP API
+  description: Customer Data Platform — event ingestion, customer profiles, segmentation engine.
+  version: 1.0.0
+
+servers:
+  - url: http://localhost
+    description: Local development
+
+security:
+  - ApiKeyAuth: []
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-Api-Key
+
+  schemas:
+    Customer:
+      type: object
+      required: [email, name]
+      properties:
+        email:
+          type: string
+          format: email
+          example: alice@example.com
+        name:
+          type: string
+          example: Alice Martin
+
+    Event:
+      type: object
+      required: [customer, event, timestamp]
+      properties:
+        customer:
+          $ref: '#/components/schemas/Customer'
+        event:
+          type: string
+          maxLength: 100
+          example: purchase
+        properties:
+          type: object
+          additionalProperties: true
+          example: { amount: 150, currency: EUR, product: Running Shoes }
+        timestamp:
+          type: string
+          format: date-time
+          example: "2026-01-15T10:30:00Z"
+
+    Condition:
+      type: object
+      required: [event, property, operator, value]
+      properties:
+        event:
+          type: string
+          example: purchase
+        property:
+          type: string
+          example: amount
+        operator:
+          type: string
+          enum: ["=", "!=", ">", ">=", "<", "<=", contains]
+          example: ">"
+        value:
+          oneOf:
+            - type: string
+            - type: number
+          example: 100
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+        errors:
+          type: object
+
+paths:
+  /api/events:
+    post:
+      summary: Ingest an event
+      tags: [Events]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Event'
+            examples:
+              purchase:
+                summary: Purchase event
+                value:
+                  customer: { email: alice@example.com, name: Alice Martin }
+                  event: purchase
+                  properties: { amount: 150, currency: EUR, product: Running Shoes }
+                  timestamp: "2026-01-15T10:30:00Z"
+              page_view:
+                summary: Page view event
+                value:
+                  customer: { email: alice@example.com, name: Alice Martin }
+                  event: page_view
+                  properties: { page: /products/shoes, duration: 45 }
+                  timestamp: "2026-01-15T10:35:00Z"
+              duplicate:
+                summary: Duplicate (same payload → deduplicated)
+                value:
+                  customer: { email: alice@example.com, name: Alice Martin }
+                  event: purchase
+                  properties: { amount: 150, currency: EUR, product: Running Shoes }
+                  timestamp: "2026-01-15T10:30:00Z"
+      responses:
+        "201":
+          description: Event accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { type: string }
+                  event_id: { type: integer }
+                  deduplicated: { type: boolean }
+        "422":
+          description: Validation error
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        "401":
+          description: Invalid or missing API key
+
+  /api/customers:
+    get:
+      summary: List customers (paginated)
+      tags: [Customers]
+      parameters:
+        - name: page
+          in: query
+          schema: { type: integer, default: 1 }
+        - name: per_page
+          in: query
+          schema: { type: integer, default: 15 }
+      responses:
+        "200":
+          description: Paginated customer list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: integer }
+                        email: { type: string }
+                        name: { type: string }
+                        created_at: { type: string }
+                  meta:
+                    type: object
+                    properties:
+                      page: { type: integer }
+                      per_page: { type: integer }
+                      total: { type: integer }
+                      last_page: { type: integer }
+        "401":
+          description: Invalid or missing API key
+
+  /api/customers/{id}:
+    get:
+      summary: Get a single customer profile with stats
+      tags: [Customers]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+          example: 1
+      responses:
+        "200":
+          description: Customer profile and event stats
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: integer }
+                  email: { type: string }
+                  name: { type: string }
+                  created_at: { type: string }
+                  stats:
+                    type: object
+                    properties:
+                      total_events: { type: integer }
+                      last_event_at: { type: string }
+        "404":
+          description: Customer not found
+        "401":
+          description: Invalid or missing API key
+
+  /api/segments/query:
+    post:
+      summary: Query customers by segment conditions
+      tags: [Segmentation]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [conditions]
+              properties:
+                conditions:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/Condition'
+            examples:
+              amount_gt_100:
+                summary: amount > 100
+                value:
+                  conditions:
+                    - { event: purchase, property: amount, operator: ">", value: 100 }
+              purchase_and_page_view:
+                summary: Purchase AND page_view (AND logic)
+                value:
+                  conditions:
+                    - { event: purchase, property: amount, operator: ">", value: 0 }
+                    - { event: page_view, property: page, operator: contains, value: /products }
+              product_contains_shoes:
+                summary: product contains "Shoes"
+                value:
+                  conditions:
+                    - { event: purchase, property: product, operator: contains, value: Shoes }
+      responses:
+        "200":
+          description: Matching customers
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: integer }
+                        email: { type: string }
+                        name: { type: string }
+                        created_at: { type: string }
+                  count: { type: integer }
+        "422":
+          description: Validation error
+        "401":
+          description: Invalid or missing API key

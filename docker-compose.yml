@@ -1,0 +1,86 @@
+services:
+
+  # MySQL 8 - persistent data via named volume
+  # Schema + seeds are auto-applied on first start
+  db:
+    image: mysql:8.0
+    ports:
+      - "3306:3306"    
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-scale_pass}
+      MYSQL_DATABASE:      ${DB_DATABASE:-scale_db}
+      MYSQL_USER:          ${DB_USERNAME:-scale_user}
+      MYSQL_PASSWORD:      ${DB_PASSWORD:-scale_pass}
+    volumes:
+      - db_data:/var/lib/mysql
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      - ./database/seeds/seed.sql:/docker-entrypoint-initdb.d/02-seed.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${DB_PASSWORD:-scale_pass}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # PHP 8.3 + Apache - bind-mounted source code
+  # for real-time editing from VS Code
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - .:/var/www/html
+    environment:
+      APP_ENV:   ${APP_ENV:-development}
+      APP_DEBUG: ${APP_DEBUG:-true}
+      APP_URL:   ${APP_URL:-http://localhost}
+      API_KEY:    ${API_KEY:-sk-scal-e-dev-key-change-in-production}
+      DB_HOST:     db
+      DB_PORT:     3306
+      DB_DATABASE: ${DB_DATABASE:-scale_db}
+      DB_USERNAME: ${DB_USERNAME:-scale_user}
+      DB_PASSWORD: ${DB_PASSWORD:-scale_pass}
+      REDIS_HOST:  redis
+      QUEUE_ENABLED: ${QUEUE_ENABLED:-true}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  # Redis 7 - in-memory cache
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+
+  # PHP worker - consumes the Redis queue (BLPOP loop)
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["php", "/var/www/html/worker.php"]
+    restart: unless-stopped
+    volumes:
+      - .:/var/www/html
+    environment:
+      QUEUE_ENABLED: "true"
+      REDIS_HOST:    redis
+      DB_HOST:       db
+      DB_PORT:       3306
+      DB_DATABASE:   ${DB_DATABASE:-scale_db}
+      DB_USERNAME:   ${DB_USERNAME:-scale_user}
+      DB_PASSWORD:   ${DB_PASSWORD:-scale_pass}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+volumes:
+  db_data:
+    driver: local
